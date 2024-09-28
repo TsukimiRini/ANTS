@@ -1,4 +1,81 @@
+import regex as re
+
 from enum import Enum
+from openai import OpenAI
+
+operation_mapping = {
+    "move to": "move to [point]",
+    "pick up": "pick up cargo",
+    "drop": "drop currently carried cargo",
+    "wait": "wait in place",
+    "speak to": "speak to [porterID1], [porterID2], ...: [message]"
+}
+
+class RequestAndParse:
+    def __init__(self):
+        self.models = {}
+        
+    def request(self, client, prompt):
+        if client not in self.models:
+            self.models[client] = client.models.list().data[0].id
+        try:
+            completion = client.completions_create(
+                model=self.models[client],
+                temperature=0.2,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                stream=False)
+        except Exception as e:
+            return request(client, prompt)
+        
+        return completion.choices[0].message.content
+    
+    def extract_point(self, line):
+        regex = r"\((\d+), (\d+)\)"
+        matches = re.finditer(regex, line)
+        for matchNum, match in enumerate(matches, start=1):
+            return int(match.group(1)), int(match.group(2))
+        return None, None
+    
+    def parse_action_respponse(self, response):
+        actions = []
+        lines = response.split("\n")
+        for line in lines:
+            if "move to" in line:
+                x, y = self.extract_point(line)
+                actions.append({
+                    "type": "move to",
+                    "args": {"x": x, "y": y}
+                    
+                })
+            elif "pick up" in line:
+                actions.append({
+                    "type": "pick up",
+                    "args": {}
+                })
+            elif "drop" in line:
+                actions.append({
+                    "type": "drop",
+                    "args": {}
+                })
+            elif "wait" in line:
+                actions.append({
+                    "type": "wait",
+                    "args": {}
+                })
+            elif "speak to" in line:
+                actions.append({
+                    "type": "speak to",
+                    "args": {
+                        "porters": [int(s) for s in line.split("speak to ")[-1].split(", ") if s.isdigit()],
+                        "msg": line.split(": ")[-1]
+                    }
+                })
+        
+        return actions
+
+request_and_parse = RequestAndParse()
 
 class GridObjType(Enum):
     UNDEFINED = "UNDEFINED"
@@ -48,7 +125,7 @@ class Destination(GridObject):
         super().__init__(grid, x, y, GridObjType.DESTINATION)
     
 class Porter(GridObject):    
-    def __init__(self, grid, id, x, y):
+    def __init__(self, grid, id, x, y, host, port):
         super().__init__(grid, x, y, GridObjType.PORTER)
         self.porter_id = id
         self.operations = {
@@ -61,14 +138,60 @@ class Porter(GridObject):
         self.state = PorterState.IDLE
         self.carrying = None
         self.capacity = 1
+        request_url = f"http://{host}:{port}/v1"
+        self.client = OpenAI(api_key="EMPTY", base_url=request_url)
     
-    def state_to_operation(self, state):
+    def state_to_operation(self, state=self.state):
         if state == PorterState.IDLE:
             return ["move to", "pick up", "wait", "speak to"]
         elif state == PorterState.READY_FOR_PICKUP:
             return []
         elif state == PorterState.CARRYING:
             return ["move to", "drop", "wait", "speak to"]
+    
+    def get_observation(self, distance=2):
+        observations = []
+        for x in range(self.x - distance, self.x + distance + 1):
+            for y in range(self.y - distance, self.y + distance + 1):
+                if x >= 0 and x < self.grid.width and y >= 0 and y < self.grid.height:
+                    for obj in self.grid.grid[x][y].content:
+                        observations.append(obj)
+        
+        return observations
+        
+    def request_operation(self):
+        dest_x, dest_y = self.grid.objects["destination"][0].x, self.grid.objects["destination"][0].y
+        observations = self.get_observation()
+        observation_str = ""
+        for idx, obj in enumerate(observations):
+            if obj.type == GridObjType.PORTER:
+                observation_str += f" ({idx}) porter {obj.porter_id} at ({obj.x}, {obj.y}),"
+            elif obj.type == GridObjType.CARGO:
+                observation_str += f" ({idx}) cargo at ({obj.x}, {obj.y}), requiring {obj.weight} porters to transport,"
+        observation_str = observation_str[:-1]
+        
+        available_operations = self.state_to_operation(self.state)
+        opeartion_str = ""
+        for idx, operation in enumerate(available_operations):
+            opeartion_str += f"- {operation_mapping[operation]}\n"
+        opeartion_str = opeartion_str[:-1]
+        
+        prompt = f"""You are a porter, and your ID is {self.porter_id}. Your mission is to search for cargos on a huge ground and carry them back to a truck.
+You carry out the mission together with your collegues. On the ground, there are about 10 porters searching and transporting cargos. Most of the cargos require multiple porters to work together to transport.
+The ground is a {self.grid.width}*{self.grid.height} square, where the truck is located in the point ({dest_x}, {dest_y}) and you are now in the point ({self.x}, {self.y}).
+Now you see around and find:{observation_str}.
+What will you do next?
+Your answer should be an action in one of the following format:
+{opeartion_str}
+You can only speak to a porter when he is nearby, i.e. your distance from him is 2.
+You can only move to a point when the point is next to you, i.e. your distance from the point is 1.
+You can only pick up a cargo when enough porters are in the same point of the cargo, i.e. there are totally at least n porters whose distance from the cargo is 0 when the cargo requires n porters to transport.
+You can drop a cargo you are carrying in the current point you are in.
+*The distance is calculated by the Manhattan distance.
+"""
+        response = request_and_parse.request(self.client, prompt)
+        return request_and_parse.parse_action_respponse(response)
+
     
     def speak_to(self, porters, msg):
         pass

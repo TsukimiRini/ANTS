@@ -1,5 +1,6 @@
 import random
 from objects import Porter, Cargo, Destination, GridObjType
+from config import Config
 
 class Cell:
     def __init__(self, x, y):
@@ -23,6 +24,7 @@ class Grid:
             "cargo": [],
             "destination": [],
         }
+        self.config = Config()
     
     def random_dests(self, n):
         for i in range(n):
@@ -48,7 +50,7 @@ class Grid:
         for i in range(n):
             x = random.randint(0, self.width - 1)
             y = random.randint(0, self.height - 1)
-            self.objects["porter"].append(Porter(self, i, x, y))
+            self.objects["porter"].append(Porter(self, i, x, y, self.config.host, self.config.port[i%len(self.config.port)]))
         return self.objects["porter"]
     
     def random_intialize(self, n_porters, n_cargos, n_dests, min_weight, max_weight):
