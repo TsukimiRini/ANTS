@@ -24,6 +24,7 @@ class Grid:
             "cargo": [],
             "destination": [],
         }
+        self.current_step = 0
         self.config = Config()
     
     def random_dests(self, n):
@@ -57,11 +58,9 @@ class Grid:
         self.random_porters(n_porters)
         self.random_cargos(n_cargos, min_weight, max_weight)
         self.random_dests(n_dests)
-        
-    def update(self, actions):
-        for porter in self.objects["porter"]:
-            action = actions[porter.porter_id]
-            porter.operations[action["type"]](**(action["args"]))
+    
+    def get_porter(self, porter_id):
+        return self.objects["porter"][porter_id]
         
     def get_state(self):
         state = {}
